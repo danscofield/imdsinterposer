@@ -6,10 +6,8 @@ import (
 	"net/http"
 	"os"
 	"strconv"
-	"time"
 
 	"github.com/akamensky/argparse"
-	"github.com/hashicorp/golang-lru/v2/expirable"
 )
 
 type InterposerArgs struct {
@@ -81,9 +79,6 @@ func main() {
 		"Transfer-Encoding",
 		"Upgrade",
 	}
-	var tokenCache *expirable.LRU[string, bool] = &expirable.LRU[string, bool]{}
-
-	tokenCache = expirable.NewLRU[string, bool](1000, nil, time.Hour*6)
 
 	handler := &imdsinterposition.IMDSInterposer{
 		Ports:                     sports,
@@ -94,7 +89,6 @@ func main() {
 		QueryStringParameter:      opts.queryParam,
 		HopHeadersToKill:          hopHeaders,
 		RefreshTime:               opts.refreshTime,
-		TokenCache:                tokenCache,
 	}
 	go handler.StartCredentialRotation()
 

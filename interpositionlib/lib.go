@@ -5,7 +5,6 @@ import (
 	b64 "encoding/base64"
 	"encoding/json"
 	"io"
-	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
@@ -18,7 +17,6 @@ import (
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/sts"
-	"github.com/hashicorp/golang-lru/v2/expirable"
 )
 
 type IMDSCredentialResponse struct {
@@ -44,7 +42,6 @@ type IMDSInterposer struct {
 	CurrentCreds              *SharedCredentials
 	IMDSBaseAddress           string
 	IMDSPort                  int64
-	TokenCache                *expirable.LRU[string, bool]
 	CredentialVendingEndpoint string
 	QueryStringParameter      string
 	HopHeadersToKill          []string
@@ -119,6 +116,34 @@ func (p *IMDSInterposer) DelHopHeaders(header http.Header) {
 		header.Del(h)
 	}
 }
+func (p *IMDSInterposer) ValidateIMDSToken(token string) bool {
+
+	client, sourcePort, err := p.GetHTTPClient()
+	defer p.ReturnPort(sourcePort)
+	if err != nil {
+		return false
+	}
+	imdsAddress := p.IMDSBaseAddress
+	if p.IMDSPort != 80 {
+		imdsAddress += ":" + strconv.FormatInt(p.IMDSPort, 10)
+	}
+
+	imdsTokenUrl := "http://" + imdsAddress + "/latest/meta-data/"
+
+	req, err := http.NewRequest(http.MethodGet, imdsTokenUrl, nil)
+	if err != nil {
+		return false
+	}
+	req.Header.Add("X-aws-ec2-metadata-token", token)
+	resp, err := client.Do(req)
+	if err != nil {
+		return false
+	}
+	if resp.StatusCode == 200 {
+		return true
+	}
+	return false
+}
 
 func (p *IMDSInterposer) GetIMDSToken() (*string, error) {
 
@@ -146,7 +171,7 @@ func (p *IMDSInterposer) GetIMDSToken() (*string, error) {
 	}
 	defer resp.Body.Close()
 
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
@@ -190,7 +215,7 @@ func (p *IMDSInterposer) GetHostCredentialsFromCVS(presignedUrl *string, endpoin
 	}
 	defer resp.Body.Close()
 
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 
 	if err != nil {
 		return nil, err
@@ -237,7 +262,7 @@ func (p *IMDSInterposer) GetEC2InstanceCreds() (*IMDSCredentialResponse, error) 
 	}
 	defer resp.Body.Close()
 
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
@@ -306,10 +331,9 @@ func (p *IMDSInterposer) ServeHTTP(wr http.ResponseWriter, req *http.Request) {
 		}
 	}
 	if req.URL.Path == "/latest/meta-data/iam/security-credentials/" {
-		// we cant validate these tokens, so we just maintain an LRU
-		// cache of the ones we proxied
+		// we cant validate these tokens, so we shim it to the real imds
 		ssrftoken := req.Header.Get("X-aws-ec2-metadata-token")
-		if len(ssrftoken) != 56 || !p.TokenCache.Contains(ssrftoken) {
+		if len(ssrftoken) != 56 || !p.ValidateIMDSToken(ssrftoken) {
 			http.Error(wr, "", http.StatusUnauthorized)
 			return
 		}
@@ -328,10 +352,10 @@ func (p *IMDSInterposer) ServeHTTP(wr http.ResponseWriter, req *http.Request) {
 		return
 	}
 	if req.URL.Path == "/latest/meta-data/iam/security-credentials/YouCanHazRole" {
-		// we cant validate these tokens, so we just maintain an LRU
-		// cache of the ones we proxied
+		// we cant validate these tokens, so we shim it to the real imds
 		ssrftoken := req.Header.Get("X-aws-ec2-metadata-token")
-		if len(ssrftoken) != 56 || !p.TokenCache.Contains(ssrftoken) {
+		if len(ssrftoken) != 56 || !p.ValidateIMDSToken(ssrftoken) {
+
 			http.Error(wr, "", http.StatusUnauthorized)
 			return
 		}
@@ -386,18 +410,8 @@ func (p *IMDSInterposer) ServeHTTP(wr http.ResponseWriter, req *http.Request) {
 
 	p.CopyHeader(wr.Header(), resp.Header)
 	wr.WriteHeader(resp.StatusCode)
-	responseBytes, err := io.ReadAll(resp.Body)
+	responseBytes, _ := io.ReadAll(resp.Body)
 
-	// cache the ssrf token
-	if req.URL.Path == "/latest/api/token" && resp.StatusCode == 200 && resp.ContentLength == 56 {
-		if err == nil {
-			tokenString := string(responseBytes)
-			if len(tokenString) > 0 {
-				p.TokenCache.Add(tokenString, true)
-			}
-		}
-
-	}
 	io.Copy(wr, bytes.NewReader(responseBytes))
 
 }
