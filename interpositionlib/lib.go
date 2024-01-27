@@ -120,6 +120,7 @@ func (p *IMDSInterposer) ValidateIMDSToken(token string) bool {
 
 	client, sourcePort, err := p.GetHTTPClient()
 	defer p.ReturnPort(sourcePort)
+	defer client.CloseIdleConnections()
 	if err != nil {
 		return false
 	}
@@ -139,16 +140,15 @@ func (p *IMDSInterposer) ValidateIMDSToken(token string) bool {
 	if err != nil {
 		return false
 	}
-	if resp.StatusCode == 200 {
-		return true
-	}
-	return false
+	defer resp.Body.Close()
+	return resp.StatusCode == 200
 }
 
 func (p *IMDSInterposer) GetIMDSToken() (*string, error) {
 
 	client, sourcePort, err := p.GetHTTPClient()
 	defer p.ReturnPort(sourcePort)
+	defer client.CloseIdleConnections()
 	if err != nil {
 		return nil, err
 	}
@@ -197,6 +197,7 @@ func (p *IMDSInterposer) GetEC2CallerIdentityPresigned(creds *IMDSCredentialResp
 }
 func (p *IMDSInterposer) GetHostCredentialsFromCVS(presignedUrl *string, endpoint string, queryParameter string) (*IMDSCredentialResponse, error) {
 	client := &http.Client{}
+	defer client.CloseIdleConnections()
 
 	encodedPSUrl := b64.StdEncoding.EncodeToString([]byte(*presignedUrl))
 
@@ -239,6 +240,7 @@ func (p *IMDSInterposer) GetEC2InstanceCreds() (*IMDSCredentialResponse, error) 
 		return nil, err
 	}
 	client, sourcePort, err := p.GetHTTPClient()
+	defer client.CloseIdleConnections()
 	defer p.ReturnPort(sourcePort)
 	if err != nil {
 		return nil, err
@@ -385,6 +387,7 @@ func (p *IMDSInterposer) ServeHTTP(wr http.ResponseWriter, req *http.Request) {
 
 	client, sourcePort, err := p.GetHTTPClient()
 	defer p.ReturnPort(sourcePort)
+	defer client.CloseIdleConnections()
 
 	req.URL.Scheme = "http"
 	req.URL.Host = p.IMDSBaseAddress
